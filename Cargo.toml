@@ -1,0 +1,21 @@
+[package]
+name = "snowboot"
+version = "0.1.0"
+edition = "2024"
+authors = ["Dominic Pearson <dsp@technoanimal.net>"]
+license = "ISC"
+description = "equipment to help brave icy streams"
+keywords = ["remuxing", "ogg"]
+repository = "https://github.com/dspearson/snowboot"
+readme = "README.md"
+
+[dependencies]
+base64 = "0.22.1"
+clap = { version = "4.5.35", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "0.14", features = ["client", "http1", "tcp"] }
+http = "0.2"
+log = "0.4.27"
+env_logger = "0.11.8"
+bytes = "1.10.1"
+ogg = { version = "0.9.2", features = ["async", "tokio"] }
