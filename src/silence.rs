@@ -4,8 +4,11 @@
 
 use std::io::Cursor;
 use ogg::PacketReader;
-
+use ogg::writing::PacketWriteEndInfo;
 use crate::SilenceData;
+
+
+const SILENCE_INTERVAL_MS: u64 = 500; // Send silence every 500ms when no input
 
 /// Raw bytes of a pre-encoded Ogg Vorbis file containing silence
 /// This can be generated with:
@@ -20,7 +23,7 @@ pub fn load_embedded_silence() -> Result<SilenceData, Box<dyn std::error::Error>
 
     let mut packets = Vec::new();
     let mut total_size = 0;
-    let mut last_granule = 0i64;
+    let mut last_granule = 0u64;
 
     while let Some(packet) = reader.read_packet()? {
         // Calculate granule position increment
