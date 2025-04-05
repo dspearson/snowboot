@@ -17,9 +17,6 @@ use tokio::time::sleep;
 use ogg::{PacketReader, PacketWriter, Packet};
 use ogg::writing::PacketWriteEndInfo;
 
-mod ogg;
-mod silence;
-
 static SERIAL_COUNTER: AtomicU32 = AtomicU32::new(1);
 static GRANULE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
