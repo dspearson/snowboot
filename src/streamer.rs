@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{self, BufReader};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
@@ -76,7 +76,7 @@ pub struct OggStreamer {
     processor_handle: Option<JoinHandle<()>>,
 
     // Current mode
-    mode: Arc<Mutex<StreamerMode>>,
+    mode: Arc<AtomicBool>, // true = Normal, false = Silence
 
     // Icecast client
     icecast_client: IcecastClient,
@@ -107,7 +107,7 @@ impl OggStreamer {
             processor_cmd_tx: None,
             processor_status_rx: None,
             processor_handle: None,
-            mode: Arc::new(Mutex::new(StreamerMode::Normal)),
+            mode: Arc::new(AtomicBool::new(true)), // Start in normal mode
             icecast_client: IcecastClient::new(config_for_client),
         }
     }
@@ -188,13 +188,14 @@ impl OggStreamer {
     /// Main control loop that coordinates workers
     async fn control_loop(&mut self) -> Result<()> {
         let mut check_interval = tokio::time::interval(Duration::from_secs(5));
+        let mut silence_start = Instant::now();
 
         while self.running.load(Ordering::SeqCst) && self.icecast_client.is_running() {
             tokio::select! {
                 // Check for status updates from the reader
                 reader_status = self.reader_status_rx.as_mut().unwrap().recv(), if self.reader_status_rx.is_some() => {
                     if let Some(status) = reader_status {
-                        self.handle_reader_status(status).await?;
+                        self.handle_reader_status(status, &mut silence_start).await?;
                     } else {
                         // Channel closed, reader is done
                         break;
@@ -218,8 +219,9 @@ impl OggStreamer {
                     }
 
                     // If in silence mode, check if we should try to reopen the input
-                    if let StreamerMode::Silence { since } = *self.mode.lock().unwrap() {
-                        if since.elapsed() > Duration::from_secs(1) {
+                    if !self.mode.load(Ordering::SeqCst) {
+                        // In silence mode
+                        if silence_start.elapsed() > Duration::from_secs(1) {
                             // Try to reopen the input every second
                             if let Some(tx) = &self.reader_cmd_tx {
                                 debug!("Trying to reopen input file");
@@ -228,7 +230,7 @@ impl OggStreamer {
 
                             // Check if we've exceeded max silence duration
                             if self.max_silence_duration.as_secs() > 0 &&
-                               since.elapsed() > self.max_silence_duration {
+                               silence_start.elapsed() > self.max_silence_duration {
                                 error!("Maximum silence duration of {} seconds exceeded. Stopping stream.",
                                        self.max_silence_duration.as_secs());
                                 break;
@@ -265,12 +267,12 @@ impl OggStreamer {
     }
 
     /// Handle status updates from the file reader
-    async fn handle_reader_status(&mut self, status: ReaderStatus) -> Result<()> {
+    async fn handle_reader_status(&mut self, status: ReaderStatus, silence_start: &mut Instant) -> Result<()> {
         match status {
             ReaderStatus::FileOpened => {
                 info!("Successfully opened input file");
                 // Switch to normal mode
-                *self.mode.lock().unwrap() = StreamerMode::Normal;
+                self.mode.store(true, Ordering::SeqCst);
             },
             ReaderStatus::FileError(msg) => {
                 error!("Input file error: {}", msg);
@@ -279,7 +281,8 @@ impl OggStreamer {
                 }
 
                 // Switch to silence mode
-                *self.mode.lock().unwrap() = StreamerMode::Silence { since: Instant::now() };
+                self.mode.store(false, Ordering::SeqCst);
+                *silence_start = Instant::now();
             },
             ReaderStatus::PacketRead { data } => {
                 trace!("Read packet of {} bytes", data.len());
@@ -303,7 +306,8 @@ impl OggStreamer {
                 }
 
                 // Switch to silence mode
-                *self.mode.lock().unwrap() = StreamerMode::Silence { since: Instant::now() };
+                self.mode.store(false, Ordering::SeqCst);
+                *silence_start = Instant::now();
             },
             ReaderStatus::Stopped => {
                 debug!("Reader worker stopped");

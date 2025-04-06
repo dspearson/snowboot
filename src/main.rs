@@ -58,26 +58,6 @@ struct Args {
     /// Maximum duration to stream silence before disconnecting (in seconds)
     #[arg(long, value_name = "SECONDS", help = "Maximum silence duration before disconnecting (0 = unlimited)", default_value = "0", value_parser = validators::validate_positive_number)]
     max_silence_duration: u64,
-
-    /// Stream name to pass to Icecast
-    #[arg(long, value_name = "NAME", help = "Stream name to display in Icecast")]
-    stream_name: Option<String>,
-
-    /// Stream description to pass to Icecast
-    #[arg(long, value_name = "DESCRIPTION", help = "Stream description for Icecast")]
-    stream_description: Option<String>,
-
-    /// Stream genre to pass to Icecast
-    #[arg(long, value_name = "GENRE", help = "Stream genre for Icecast")]
-    stream_genre: Option<String>,
-
-    /// Stream URL to pass to Icecast
-    #[arg(long, value_name = "URL", help = "Stream URL for Icecast")]
-    stream_url: Option<String>,
-
-    /// Whether the stream should be listed as public
-    #[arg(long, help = "List the stream as public on directory servers")]
-    public: bool,
 }
 
 #[tokio::main]
@@ -109,11 +89,6 @@ async fn main() -> Result<()> {
         &args.mount,
         &args.user,
         &args.password,
-        args.stream_name.clone(),
-        args.stream_description.clone(),
-        args.stream_genre.clone(),
-        args.stream_url.clone(),
-        args.public,
     );
 
     // Create a shared running flag

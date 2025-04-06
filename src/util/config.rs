@@ -23,11 +23,6 @@ pub fn create_icecast_config(
     mount: &str,
     username: &str,
     password: &str,
-    name: Option<String>,
-    description: Option<String>,
-    genre: Option<String>,
-    url: Option<String>,
-    is_public: bool,
 ) -> IcecastConfig {
     let (host, port) = parse_host_port(host_str);
 
@@ -37,11 +32,5 @@ pub fn create_icecast_config(
         mount: mount.to_string(),
         username: username.to_string(),
         password: password.to_string(),
-        content_type: "application/ogg".to_string(),
-        name,
-        description,
-        genre,
-        url,
-        is_public: Some(is_public),
     }
 }
