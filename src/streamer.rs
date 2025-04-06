@@ -92,11 +92,9 @@ impl OggStreamer {
         silence_data: Option<SilenceData>,
         keep_alive: bool,
     ) -> Self {
-        let config_for_client = icecast_config.clone();
-
         Self {
             input_path,
-            icecast_config,
+            icecast_config: icecast_config.clone(),
             running,
             max_silence_duration,
             silence_data,
@@ -108,7 +106,7 @@ impl OggStreamer {
             processor_status_rx: None,
             processor_handle: None,
             mode: Arc::new(AtomicBool::new(true)), // Start in normal mode
-            icecast_client: IcecastClient::new(config_for_client),
+            icecast_client: IcecastClient::new(icecast_config),
         }
     }
 
@@ -190,7 +188,7 @@ impl OggStreamer {
         let mut check_interval = tokio::time::interval(Duration::from_secs(5));
         let mut silence_start = Instant::now();
 
-        while self.running.load(Ordering::SeqCst) && self.icecast_client.is_running() {
+        while self.running.load(Ordering::SeqCst) && self.icecast_client.is_connected() {
             tokio::select! {
                 // Check for status updates from the reader
                 reader_status = self.reader_status_rx.as_mut().unwrap().recv(), if self.reader_status_rx.is_some() => {
