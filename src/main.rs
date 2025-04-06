@@ -8,14 +8,13 @@ mod streamer;
 mod validation;
 mod util;
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 use std::sync::Arc;
 use std::time::Duration;
 use clap::Parser;
-use log::{info, warn, error, debug};
+use log::info;
 use anyhow::Result;
 
-use crate::icecast::IcecastConfig;
 use crate::streamer::OggStreamer;
 use crate::validation::validators;
 use crate::util::logging;
@@ -140,7 +139,7 @@ async fn main() -> Result<()> {
     // Run the streamer
     match streamer.run().await {
         Ok(_) => info!("Stream completed successfully"),
-        Err(e) => error!("Streaming error: {}", e),
+        Err(e) => log::error!("Streaming error: {}", e),
     }
 
     info!("Shutting down");

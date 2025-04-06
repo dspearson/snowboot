@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info, trace};
 use ogg::PacketReader;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::task::JoinHandle;
@@ -92,6 +92,8 @@ impl OggStreamer {
         silence_data: Option<SilenceData>,
         keep_alive: bool,
     ) -> Self {
+        let config_for_client = icecast_config.clone();
+
         Self {
             input_path,
             icecast_config,
@@ -106,7 +108,7 @@ impl OggStreamer {
             processor_status_rx: None,
             processor_handle: None,
             mode: Arc::new(Mutex::new(StreamerMode::Normal)),
-            icecast_client: IcecastClient::new(icecast_config.clone()),
+            icecast_client: IcecastClient::new(config_for_client),
         }
     }
 
@@ -141,14 +143,14 @@ impl OggStreamer {
         self.processor_cmd_tx = Some(cmd_tx);
         self.processor_status_rx = Some(status_rx);
 
-        let icecast_client = self.icecast_client.clone();
+        let mut icecast_client = self.icecast_client.clone();
         let running = self.running.clone();
 
         self.processor_handle = Some(tokio::spawn(async move {
             if let Err(e) = Self::packet_processor_worker(
                 cmd_rx,
                 status_tx,
-                icecast_client,
+                &mut icecast_client,
                 running
             ).await {
                 error!("Packet processor error: {}", e);
@@ -357,7 +359,7 @@ impl OggStreamer {
     async fn packet_processor_worker(
         mut cmd_rx: Receiver<PacketCommand>,
         status_tx: Sender<PacketStatus>,
-        mut icecast_client: IcecastClient,
+        icecast_client: &mut IcecastClient,
         running: Arc<AtomicBool>,
     ) -> Result<()> {
         info!("Packet processor started");
@@ -449,23 +451,26 @@ impl OggStreamer {
 
                 // Process the input file if available
                 _ = async {}, if input_reader.is_some() => {
-                    let reader = input_reader.as_mut().unwrap();
+                    // Use a block to limit the scope of the borrow
+                    {
+                        let reader = input_reader.as_mut().unwrap();
 
-                    // Process a packet
-                    match Self::read_next_packet(reader).await {
-                        Ok(Some(packet_data)) => {
-                            let _ = status_tx.send(ReaderStatus::PacketRead { data: packet_data }).await;
-                        },
-                        Ok(None) => {
-                            let _ = status_tx.send(ReaderStatus::EndOfFile).await;
-                            // Reset the reader to trigger reopening
-                            input_reader = None;
-                        },
-                        Err(e) => {
-                            let error_msg = format!("Error reading packet: {}", e);
-                            let _ = status_tx.send(ReaderStatus::Error(error_msg)).await;
-                            // Reset the reader to trigger reopening
-                            input_reader = None;
+                        // Process a packet, but do it in a way that doesn't move the reader
+                        match Self::read_next_packet(reader).await {
+                            Ok(Some(packet_data)) => {
+                                let _ = status_tx.send(ReaderStatus::PacketRead { data: packet_data }).await;
+                            },
+                            Ok(None) => {
+                                let _ = status_tx.send(ReaderStatus::EndOfFile).await;
+                                // Reset the reader to trigger reopening
+                                input_reader = None;
+                            },
+                            Err(e) => {
+                                let error_msg = format!("Error reading packet: {}", e);
+                                let _ = status_tx.send(ReaderStatus::Error(error_msg)).await;
+                                // Reset the reader to trigger reopening
+                                input_reader = None;
+                            }
                         }
                     }
 
@@ -497,14 +502,17 @@ impl OggStreamer {
 
     /// Read the next Ogg packet from the reader
     async fn read_next_packet(reader: &mut BufReader<File>) -> Result<Option<Vec<u8>>> {
-        // This is sync I/O, so we use spawn_blocking to avoid blocking the async runtime
-        tokio::task::spawn_blocking(move || {
-            let mut packet_reader = PacketReader::new(reader);
-            match packet_reader.read_packet() {
-                Ok(Some(packet)) => Ok(Some(packet.data)),
-                Ok(None) => Ok(None),
-                Err(e) => Err(anyhow!("Error reading Ogg packet: {}", e)),
-            }
-        }).await?
+        // We need to handle the packet reading in a way that doesn't transfer ownership
+        // of the reader across an await point
+
+        // Create a new packet reader for this operation
+        let mut packet_reader = PacketReader::new(reader);
+
+        // Read a single packet
+        match packet_reader.read_packet() {
+            Ok(Some(packet)) => Ok(Some(packet.data)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(anyhow!("Error reading Ogg packet: {}", e)),
+        }
     }
 }
