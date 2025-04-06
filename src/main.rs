@@ -2,6 +2,10 @@
 //
 // Snowboots for icy streams
 
+mod icecast;
+mod silence;
+mod streamer;
+
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::os::unix::fs::FileTypeExt;
@@ -13,9 +17,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use clap::{Parser, Subcommand};
 use log::{info, warn, error, debug, trace};
-use tokio::time::sleep;
-use ogg::{PacketReader, PacketWriter, Packet};
-use ogg::writing::PacketWriteEndInfo;
+use anyhow::{Result, Context};
+
+use crate::icecast::IcecastConfig;
+use crate::streamer::OggStreamer;
 
 static SERIAL_COUNTER: AtomicU32 = AtomicU32::new(1);
 static GRANULE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -54,6 +59,26 @@ struct Args {
     /// Maximum duration to stream silence before disconnecting (in seconds)
     #[arg(long, value_name = "SECONDS", help = "Maximum silence duration before disconnecting (0 = unlimited)", default_value = "0", value_parser = validate_positive_number)]
     max_silence_duration: u64,
+
+    /// Stream name to pass to Icecast
+    #[arg(long, value_name = "NAME", help = "Stream name to display in Icecast")]
+    stream_name: Option<String>,
+
+    /// Stream description to pass to Icecast
+    #[arg(long, value_name = "DESCRIPTION", help = "Stream description for Icecast")]
+    stream_description: Option<String>,
+
+    /// Stream genre to pass to Icecast
+    #[arg(long, value_name = "GENRE", help = "Stream genre for Icecast")]
+    stream_genre: Option<String>,
+
+    /// Stream URL to pass to Icecast
+    #[arg(long, value_name = "URL", help = "Stream URL for Icecast")]
+    stream_url: Option<String>,
+
+    /// Whether the stream should be listed as public
+    #[arg(long, help = "List the stream as public on directory servers")]
+    public: bool,
 }
 
 // Validation functions
@@ -130,21 +155,13 @@ impl Args {
 // Global running flag for signal handling
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
-/// Preloaded silence data
-pub struct SilenceData {
-    packets: Vec<(Vec<u8>, u64)>,  // (packet_data, granule_increment)
-    total_size: usize,
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     // Parse command line arguments
     let args = Args::parse();
 
     // Perform additional validation on arguments as a whole
-    if let Err(err) = args.validate() {
-        eprintln!("Error in arguments: {}", err);
-        return Err(err.into());
-    }
+    args.validate().context("Invalid command line arguments")?;
 
     // Extract host and port
     let (host, port) = args.get_host_and_port();
@@ -188,7 +205,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    // The rest of your application code would go here...
+    // Create Icecast configuration
+    let icecast_config = IcecastConfig {
+        host,
+        port
+        mount: args.mount.clone(),
+        username: args.user.clone(),
+        password: args.password.clone(),
+        content_type: "application/ogg".to_string(),
+        name: args.stream_name,
+        description: args.stream_description,
+        genre: args.stream_genre,
+        url: args.stream_url,
+        is_public: Some(args.public),
+    };
+
+    // Create a shared running flag
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = running.clone();
+
+    // Set up the maximum silence duration
+    let max_silence_duration = if args.max_silence_duration > 0 {
+        Duration::from_secs(args.max_silence_duration)
+    } else {
+        Duration::from_secs(u64::MAX) // Effectively unlimited
+    };
+
+    // Create and run the streamer
+    let mut streamer = OggStreamer::new(
+        args.input_pipe,
+        icecast_config,
+        running_clone,
+        max_silence_duration,
+        silence_data,
+        args.keep_alive,
+    );
+
+    // Run the streamer
+    match streamer.run().await {
+        Ok(_) => info!("Stream completed successfully"),
+        Err(e) => error!("Streaming error: {:?}", e),
+    }
 
     info!("Shutting down");
     Ok(())
