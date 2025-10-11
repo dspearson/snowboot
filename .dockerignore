@@ -1,0 +1,25 @@
+# Git
+.git
+.gitignore
+
+# Rust
+target/
+Cargo.lock
+
+# Documentation
+*.md
+!README.rd
+doc/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# CI/CD
+.github/
+
+# Development
+CLAUDE.md
+*.claude.md

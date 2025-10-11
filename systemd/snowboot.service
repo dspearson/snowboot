@@ -1,0 +1,63 @@
+[Unit]
+Description=Snowboot - Icecast Source Client
+Documentation=https://github.com/dspearson/snowboot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=snowboot
+Group=snowboot
+
+# Environment file (optional)
+EnvironmentFile=-/etc/snowboot/environment
+
+# Configuration
+Environment=SNOWBOOT_LOG_LEVEL=info
+Environment=SNOWBOOT_LOG_FORMAT=text
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/run/snowboot /var/lib/snowboot
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=512
+
+# Restart policy
+Restart=on-failure
+RestartSec=5s
+StartLimitInterval=10min
+StartLimitBurst=5
+
+# Working directory
+WorkingDirectory=/var/lib/snowboot
+
+# Command
+ExecStartPre=/usr/bin/mkfifo -m 0600 /var/run/snowboot/input.fifo
+ExecStart=/usr/local/bin/snowboot \
+    --config /etc/snowboot/config.toml \
+    --log-level ${SNOWBOOT_LOG_LEVEL}
+
+ExecStopPost=/bin/rm -f /var/run/snowboot/input.fifo
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=snowboot
+
+[Install]
+WantedBy=multi-user.target

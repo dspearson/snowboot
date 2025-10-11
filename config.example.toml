@@ -1,0 +1,28 @@
+# Snowboot Configuration File
+# Copy this file to snowboot.toml and customize as needed
+
+[server]
+host = "localhost"
+port = 8000
+mount = "/stream.ogg"
+username = "source"
+# password = "your-password-here"  # Better to use SNOWBOOT_PASSWORD env var
+use_tls = false
+
+[audio]
+sample_rate = 44100  # Hz (8000-192000, common: 44100, 48000)
+bitrate = 320        # kbps (8-500)
+buffer_seconds = 1.0 # seconds (0.1-10.0)
+
+[input]
+pipe_path = "/tmp/snowboot.in"
+
+[logging]
+level = "info"       # trace, debug, info, warn, error
+format = "text"      # text or json
+
+[monitoring]
+metrics_enabled = false
+metrics_port = 9090
+health_enabled = false
+health_port = 8080

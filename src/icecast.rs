@@ -1,17 +1,16 @@
-// src/icecast.rs
-//
 // Module for handling connections to Icecast servers
 
-use std::io;
 use std::sync::Arc;
-use std::time::Duration;
-
-use anyhow::{Result, anyhow};
-use base64::{engine::general_purpose, Engine as _};
-use log::{error, info, trace, warn};
-use tokio::io::{AsyncWriteExt, BufWriter};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
+
+use crate::errors::{Result, SnowbootError, ErrorCode};
+use tracing::{error, info, trace, debug, instrument};
+use httparse;
 
 /// Configuration for the Icecast connection
 #[derive(Clone)]
@@ -21,6 +20,7 @@ pub struct IcecastConfig {
     pub mount: String,
     pub username: String,
     pub password: String,
+    pub content_type: String,
 }
 
 impl Default for IcecastConfig {
@@ -31,16 +31,17 @@ impl Default for IcecastConfig {
             mount: "/stream.ogg".to_string(),
             username: "source".to_string(),
             password: "hackme".to_string(),
+            content_type: "application/ogg".to_string(),
         }
     }
 }
 
 /// Represents an active connection to an Icecast server
+#[derive(Clone)]
 pub struct IcecastClient {
     config: IcecastConfig,
-    writer: Arc<Mutex<Option<BufWriter<TcpStream>>>>,
-    connected: bool,
-    connect_timeout: Duration,
+    running: Arc<AtomicBool>,
+    stream: Arc<Mutex<Option<TcpStream>>>,
 }
 
 impl IcecastClient {
@@ -48,169 +49,207 @@ impl IcecastClient {
     pub fn new(config: IcecastConfig) -> Self {
         Self {
             config,
-            writer: Arc::new(Mutex::new(None)),
-            connected: false,
-            connect_timeout: Duration::from_secs(5),
+            running: Arc::new(AtomicBool::new(false)),
+            stream: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Connect to the Icecast server
-    pub async fn connect(&mut self) -> Result<()> {
-        if self.connected {
-            return Ok(());
-        }
-
-        let addr = format!("{}:{}", self.config.host, self.config.port);
+    pub async fn connect(&self) -> Result<()> {
         info!("Connecting to Icecast server at {}:{}{}",
               self.config.host, self.config.port, self.config.mount);
 
-        // Establish TCP connection with timeout
-        let stream = tokio::time::timeout(
-            self.connect_timeout,
-            TcpStream::connect(&addr)
-        ).await
-            .map_err(|_| anyhow!("Connection timeout"))??;
+        // Connect to the server
+        let addr = format!("{}:{}", self.config.host, self.config.port);
+        let mut stream = TcpStream::connect(&addr).await
+            .map_err(|e| SnowbootError::connection_failed(&self.config.host, self.config.port, e))?;
 
-        // Prepare HTTP headers for PUT request
-        let auth = general_purpose::STANDARD.encode(
-            format!("{}:{}", self.config.username, self.config.password)
-        );
+        // Set TCP_NODELAY to reduce latency
+        stream.set_nodelay(true).map_err(|e| SnowbootError::Connection {
+            message: "Failed to set TCP_NODELAY".to_string(),
+            code: ErrorCode::ConnectionFailed,
+            source: Some(e),
+        })?;
 
+        // Create HTTP PUT request with authentication
+        let auth = format!("{}:{}", self.config.username, self.config.password);
+        let auth_header = format!("Basic {}", BASE64.encode(auth));
+
+        // Build the PUT request
         let request = format!(
             "PUT {} HTTP/1.1\r\n\
              Host: {}:{}\r\n\
-             Authorization: Basic {}\r\n\
-             Content-Type: application/ogg\r\n\
+             Authorization: {}\r\n\
+             Content-Type: {}\r\n\
+             Ice-Public: 1\r\n\
+             Ice-Name: Snowboot Stream\r\n\
+             Ice-Description: Powered by Snowboot\r\n\
+             User-Agent: Snowboot/0.1.0\r\n\
              Expect: 100-continue\r\n\
              \r\n",
             self.config.mount,
             self.config.host,
             self.config.port,
-            auth
+            auth_header,
+            self.config.content_type
         );
 
-        let mut writer = BufWriter::new(stream);
-        writer.write_all(request.as_bytes()).await?;
-        writer.flush().await?;
+        // Send the request
+        stream.write_all(request.as_bytes()).await
+            .map_err(|e| SnowbootError::Connection {
+                message: "Failed to send HTTP request".to_string(),
+                code: ErrorCode::ConnectionFailed,
+                source: Some(e),
+            })?;
 
-        // Read the initial HTTP response
-        let mut response_buf = [0u8; 1024];
-        let socket_clone = writer.get_ref().try_clone()?;
+        // Receive the server's response - read until we get complete headers
+        let response_str = self.read_http_response(&mut stream).await?;
 
-        // Set a read timeout for the initial response
-        socket_clone.set_read_timeout(Some(self.connect_timeout))?;
+        // Parse the HTTP response properly
+        let status_code = self.parse_http_status(&response_str)?;
 
-        let n = socket_clone.read(&mut response_buf)?;
-        let response = String::from_utf8_lossy(&response_buf[0..n]);
+        debug!("Received HTTP status code: {}", status_code);
 
-        // Check for a successful response
-        if !response.contains("HTTP/1.1 200 OK") && !response.contains("HTTP/1.0 200 OK") {
-            return Err(anyhow!("Icecast server returned error: {}", response));
+        // Check if the response is HTTP 100 Continue or 200 OK
+        if status_code != 100 && status_code != 200 {
+            if status_code == 401 || status_code == 403 {
+                return Err(SnowbootError::auth_failed(&response_str));
+            }
+            return Err(SnowbootError::unexpected_response(&response_str));
         }
 
-        // Store the writer for future use
-        *self.writer.lock().await = Some(writer);
-        self.connected = true;
+        // Save the stream
+        *self.stream.lock().await = Some(stream);
 
+        // Set the client as running
+        self.running.store(true, Ordering::SeqCst);
         info!("Successfully connected to Icecast server");
+
         Ok(())
     }
 
     /// Send data to the Icecast server
-    pub async fn send_data(&mut self, data: &[u8]) -> Result<usize> {
-        if !self.connected {
-            self.connect().await?;
+    pub async fn send_data(&self, data: &[u8]) -> Result<()> {
+        if !self.is_running() {
+            return Err(SnowbootError::Connection {
+                message: "Not connected to Icecast server".to_string(),
+                code: ErrorCode::DisconnectedUnexpectedly,
+                source: None,
+            });
         }
 
-        let mut writer_guard = self.writer.lock().await;
-        let writer = writer_guard.as_mut()
-            .ok_or_else(|| anyhow!("Not connected to Icecast server"))?;
-
-        match writer.write(data).await {
-            Ok(bytes_written) => {
-                trace!("Sent {} bytes to Icecast", bytes_written);
-
-                // Periodically flush to ensure data is sent
-                if bytes_written > 8192 {
-                    if let Err(e) = writer.flush().await {
-                        error!("Error flushing Icecast writer: {}", e);
-                        self.connected = false;
-                        *writer_guard = None;
-                        return Err(anyhow!("Failed to flush data to Icecast: {}", e));
-                    }
+        let mut stream_guard = self.stream.lock().await;
+        if let Some(stream) = &mut *stream_guard {
+            match stream.write_all(data).await {
+                Ok(_) => {
+                    trace!("Sent {} bytes to Icecast", data.len());
+                    Ok(())
+                },
+                Err(e) => {
+                    error!("Failed to send data to Icecast: {}", e);
+                    self.running.store(false, Ordering::SeqCst);
+                    *stream_guard = None;
+                    Err(SnowbootError::Connection {
+                        message: "Failed to send data to server".to_string(),
+                        code: ErrorCode::DisconnectedUnexpectedly,
+                        source: Some(e),
+                    })
                 }
-
-                Ok(bytes_written)
-            },
-            Err(e) => {
-                error!("Error writing to Icecast: {}", e);
-                self.connected = false;
-                *writer_guard = None;
-                Err(anyhow!("Failed to write to Icecast stream: {}", e))
             }
+        } else {
+            Err(SnowbootError::Connection {
+                message: "Stream disconnected".to_string(),
+                code: ErrorCode::DisconnectedUnexpectedly,
+                source: None,
+            })
         }
-    }
-
-    /// Flush any buffered data to the server
-    pub async fn flush(&mut self) -> Result<()> {
-        let mut writer_guard = self.writer.lock().await;
-        if let Some(writer) = writer_guard.as_mut() {
-            writer.flush().await?;
-        }
-        Ok(())
     }
 
     /// Disconnect from the Icecast server
-    pub async fn disconnect(&mut self) -> Result<()> {
-        if self.connected {
-            info!("Disconnecting from Icecast server");
+    pub async fn disconnect(&self) -> Result<()> {
+        info!("Disconnecting from Icecast server");
 
-            // Flush any remaining data
-            if let Err(e) = self.flush().await {
-                warn!("Error flushing data during disconnect: {}", e);
-            }
-
-            // Clear the writer
-            *self.writer.lock().await = None;
-            self.connected = false;
+        let mut stream_guard = self.stream.lock().await;
+        if let Some(mut stream) = stream_guard.take() {
+            // Properly close the connection
+            let _ = stream.shutdown().await;
         }
+
+        self.running.store(false, Ordering::SeqCst);
         Ok(())
     }
 
-    /// Check if the client is currently connected
-    pub fn is_connected(&self) -> bool {
-        self.connected
-    }
-}
-
-// Add TryClone trait for TcpStream
-trait TryClone {
-    fn try_clone(&self) -> io::Result<Self> where Self: Sized;
-}
-
-impl TryClone for TcpStream {
-    fn try_clone(&self) -> io::Result<Self> {
-        // Call the actual try_clone method
-        TcpStream::try_clone(self)
-    }
-}
-
-// Read extension for TcpStream
-trait ReadExt {
-    fn read(&self, buf: &mut [u8]) -> io::Result<usize>;
-    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
-}
-
-impl ReadExt for TcpStream {
-    fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        // This is a synchronous read from an async TcpStream which is not ideal,
-        // but we only need it for the initial HTTP response
-        let std_stream = self.try_clone()?.into_std()?;
-        std::io::Read::read(&mut &std_stream, buf)
+    /// Check if the client is still running
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
     }
 
-    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        let std_stream = self.try_clone()?.into_std()?;
-        std_stream.set_read_timeout(timeout)
+    /// Read HTTP response from stream until we get complete headers
+    async fn read_http_response(&self, stream: &mut TcpStream) -> Result<String> {
+        let mut buffer = Vec::with_capacity(4096);
+        let mut temp = [0u8; 1024];
+
+        // Read until we find \r\n\r\n (end of headers)
+        loop {
+            let n = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                stream.read(&mut temp)
+            ).await
+                .map_err(|_| SnowbootError::Connection {
+                    message: "Timeout reading server response".to_string(),
+                    code: ErrorCode::ConnectionTimeout,
+                    source: None,
+                })?
+                .map_err(|e| SnowbootError::Connection {
+                    message: "Failed to read server response".to_string(),
+                    code: ErrorCode::ConnectionFailed,
+                    source: Some(e),
+                })?;
+
+            if n == 0 {
+                return Err(SnowbootError::Connection {
+                    message: "Server closed connection before sending response".to_string(),
+                    code: ErrorCode::DisconnectedUnexpectedly,
+                    source: None,
+                });
+            }
+
+            buffer.extend_from_slice(&temp[..n]);
+
+            // Check if we have complete headers
+            if buffer.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+
+            // Prevent infinite buffering
+            if buffer.len() > 16384 {
+                return Err(SnowbootError::http_parse_failed(
+                    "Response headers too large".to_string()
+                ));
+            }
+        }
+
+        String::from_utf8(buffer)
+            .map_err(|e| SnowbootError::http_parse_failed(format!("Invalid UTF-8: {}", e)))
+    }
+
+    /// Parse HTTP status code from response
+    fn parse_http_status(&self, response: &str) -> Result<u16> {
+        let mut headers = [httparse::EMPTY_HEADER; 64];
+        let mut resp = httparse::Response::new(&mut headers);
+
+        match resp.parse(response.as_bytes()) {
+            Ok(httparse::Status::Complete(_)) => {
+                resp.code.ok_or_else(|| {
+                    SnowbootError::http_parse_failed("No status code in response".to_string())
+                })
+            }
+            Ok(httparse::Status::Partial) => {
+                Err(SnowbootError::http_parse_failed("Incomplete HTTP response".to_string()))
+            }
+            Err(e) => {
+                Err(SnowbootError::http_parse_failed(format!("Parse error: {}", e)))
+            }
+        }
     }
 }

@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  icecast:
+    image: moul/icecast:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - ICECAST_SOURCE_PASSWORD=hackme
+      - ICECAST_ADMIN_PASSWORD=admin
+      - ICECAST_RELAY_PASSWORD=relay
+    volumes:
+      - icecast_data:/var/log/icecast2
+
+  snowboot:
+    build: .
+    image: snowboot:latest
+    depends_on:
+      - icecast
+    environment:
+      - SNOWBOOT_HOST=icecast:8000
+      - SNOWBOOT_MOUNT=/live.ogg
+      - SNOWBOOT_USER=source
+      - SNOWBOOT_PASSWORD=hackme
+      - SNOWBOOT_INPUT_PIPE=/var/run/snowboot/input.fifo
+      - SNOWBOOT_LOG_LEVEL=info
+      - SNOWBOOT_METRICS_ENABLED=true
+      - SNOWBOOT_METRICS_PORT=9090
+      - SNOWBOOT_HEALTH_ENABLED=true
+      - SNOWBOOT_HEALTH_PORT=8080
+    ports:
+      - "9090:9090"  # Metrics
+      - "8080:8080"  # Health
+    volumes:
+      - snowboot_pipes:/var/run/snowboot
+      - snowboot_config:/etc/snowboot
+    command: >
+      --host icecast:8000
+      --mount /live.ogg
+      --user source
+      --password hackme
+      --input-pipe /var/run/snowboot/input.fifo
+      --sample-rate 44100
+      --bitrate 320
+      --log-level info
+    restart: unless-stopped
+
+volumes:
+  icecast_data:
+  snowboot_pipes:
+  snowboot_config:
