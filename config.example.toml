@@ -14,15 +14,10 @@ sample_rate = 44100  # Hz (8000-192000, common: 44100, 48000)
 bitrate = 320        # kbps (8-500)
 buffer_seconds = 1.0 # seconds (0.1-10.0)
 
-[input]
-pipe_path = "/tmp/snowboot.in"
+[api]
+port = 3000
+bind_address = "0.0.0.0"
 
 [logging]
 level = "info"       # trace, debug, info, warn, error
 format = "text"      # text or json
-
-[monitoring]
-metrics_enabled = false
-metrics_port = 9090
-health_enabled = false
-health_port = 8080

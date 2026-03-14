@@ -215,9 +215,9 @@ mod tests {
 
     #[test]
     fn test_backoff_calculation() {
-        let mut backoff = 1.0;
-        let multiplier = 2.0;
-        let max = 60.0;
+        let mut backoff: f64 = 1.0;
+        let multiplier: f64 = 2.0;
+        let max: f64 = 60.0;
 
         backoff = (backoff * multiplier).min(max);
         assert_eq!(backoff, 2.0);

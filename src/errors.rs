@@ -30,6 +30,9 @@ pub enum ErrorCode {
     PipeReadFailed = 3002,
     NotAFifo = 3003,
     PermissionDenied = 3004,
+    FileNotFound = 3010,
+    FileReadFailed = 3011,
+    InvalidFileFormat = 3012,
 
     /// Protocol errors (4000-4999)
     HttpParseFailed = 4000,
@@ -41,8 +44,18 @@ pub enum ErrorCode {
     TaskPanic = 5001,
     ShutdownFailed = 5002,
 
+    /// Queue errors (6000-6999)
+    TrackNotFound = 6001,
+    InvalidPosition = 6002,
+
     /// Generic error
     Unknown = 9999,
+}
+
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", *self as u32)
+    }
 }
 
 impl ErrorCode {

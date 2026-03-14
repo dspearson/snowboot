@@ -17,20 +17,17 @@ pub struct Config {
     #[serde(default)]
     pub audio: AudioConfig,
 
-    /// Input configuration
+    /// API configuration
     #[serde(default)]
-    pub input: InputConfig,
+    pub api: ApiConfig,
 
     /// Logging configuration
     #[serde(default)]
     pub logging: LoggingConfig,
-
-    /// Monitoring configuration
-    #[serde(default)]
-    pub monitoring: MonitoringConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
@@ -42,6 +39,7 @@ pub struct ServerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AudioConfig {
     pub sample_rate: u32,
     pub bitrate: u32,
@@ -49,8 +47,9 @@ pub struct AudioConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InputConfig {
-    pub pipe_path: String,
+pub struct ApiConfig {
+    pub port: u16,
+    pub bind_address: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,14 +63,6 @@ pub struct LoggingConfig {
 pub enum LogFormat {
     Text,
     Json,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MonitoringConfig {
-    pub metrics_enabled: bool,
-    pub metrics_port: u16,
-    pub health_enabled: bool,
-    pub health_port: u16,
 }
 
 // Default implementations
@@ -98,10 +89,11 @@ impl Default for AudioConfig {
     }
 }
 
-impl Default for InputConfig {
+impl Default for ApiConfig {
     fn default() -> Self {
         Self {
-            pipe_path: "/tmp/snowboot.in".to_string(),
+            port: 3000,
+            bind_address: "0.0.0.0".to_string(),
         }
     }
 }
@@ -115,25 +107,13 @@ impl Default for LoggingConfig {
     }
 }
 
-impl Default for MonitoringConfig {
-    fn default() -> Self {
-        Self {
-            metrics_enabled: false,
-            metrics_port: 9090,
-            health_enabled: false,
-            health_port: 8080,
-        }
-    }
-}
-
 impl Default for Config {
     fn default() -> Self {
         Self {
             server: ServerConfig::default(),
             audio: AudioConfig::default(),
-            input: InputConfig::default(),
+            api: ApiConfig::default(),
             logging: LoggingConfig::default(),
-            monitoring: MonitoringConfig::default(),
         }
     }
 }
@@ -200,9 +180,14 @@ impl Config {
             }
         }
 
-        // Input configuration
-        if let Ok(pipe) = env::var("SNOWBOOT_INPUT_PIPE") {
-            self.input.pipe_path = pipe;
+        // API configuration
+        if let Ok(port) = env::var("SNOWBOOT_API_PORT") {
+            if let Ok(p) = port.parse() {
+                self.api.port = p;
+            }
+        }
+        if let Ok(bind) = env::var("SNOWBOOT_API_BIND") {
+            self.api.bind_address = bind;
         }
 
         // Logging configuration
@@ -215,23 +200,6 @@ impl Config {
             }
         }
 
-        // Monitoring configuration
-        if let Ok(enabled) = env::var("SNOWBOOT_METRICS_ENABLED") {
-            self.monitoring.metrics_enabled = enabled.parse().unwrap_or(false);
-        }
-        if let Ok(port) = env::var("SNOWBOOT_METRICS_PORT") {
-            if let Ok(p) = port.parse() {
-                self.monitoring.metrics_port = p;
-            }
-        }
-        if let Ok(enabled) = env::var("SNOWBOOT_HEALTH_ENABLED") {
-            self.monitoring.health_enabled = enabled.parse().unwrap_or(false);
-        }
-        if let Ok(port) = env::var("SNOWBOOT_HEALTH_PORT") {
-            if let Ok(p) = port.parse() {
-                self.monitoring.health_port = p;
-            }
-        }
     }
 
     /// Validate all configuration values
@@ -259,15 +227,9 @@ impl Config {
             return Err(SnowbootError::invalid_host("empty hostname"));
         }
 
-        // Validate monitoring ports don't conflict
-        if self.monitoring.metrics_enabled && self.monitoring.health_enabled {
-            if self.monitoring.metrics_port == self.monitoring.health_port {
-                return Err(SnowbootError::Config {
-                    message: "Metrics and health ports cannot be the same".to_string(),
-                    code: crate::errors::ErrorCode::InvalidPort,
-                    source: None,
-                });
-            }
+        // Validate API port
+        if self.api.port == 0 {
+            return Err(SnowbootError::invalid_port("0 (api)"));
         }
 
         Ok(())
@@ -290,18 +252,13 @@ sample_rate = 44100  # Hz (8000-192000, common: 44100, 48000)
 bitrate = 320        # kbps (8-500)
 buffer_seconds = 1.0 # seconds (0.1-10.0)
 
-[input]
-pipe_path = "/tmp/snowboot.in"
+[api]
+port = 3000
+bind_address = "0.0.0.0"
 
 [logging]
 level = "info"       # trace, debug, info, warn, error
 format = "text"      # text or json
-
-[monitoring]
-metrics_enabled = false
-metrics_port = 9090
-health_enabled = false
-health_port = 8080
 "#.to_string()
     }
 }

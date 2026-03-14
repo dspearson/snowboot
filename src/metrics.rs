@@ -76,6 +76,22 @@ lazy_static! {
         "snowboot_uptime_seconds",
         "Uptime in seconds"
     ).unwrap();
+
+    // Track/queue metrics
+    pub static ref TRACKS_PLAYED: IntCounter = IntCounter::new(
+        "snowboot_tracks_played_total",
+        "Total number of tracks played"
+    ).unwrap();
+
+    pub static ref TRACKS_SKIPPED: IntCounter = IntCounter::new(
+        "snowboot_tracks_skipped_total",
+        "Total number of tracks skipped"
+    ).unwrap();
+
+    pub static ref QUEUE_LENGTH: IntGauge = IntGauge::new(
+        "snowboot_queue_length",
+        "Current number of tracks in the queue"
+    ).unwrap();
 }
 
 /// Initialize metrics registry
@@ -93,6 +109,9 @@ pub fn init_metrics() {
     REGISTRY.register(Box::new(ERRORS_TOTAL.clone())).unwrap();
     REGISTRY.register(Box::new(PIPE_ERRORS.clone())).unwrap();
     REGISTRY.register(Box::new(UPTIME_SECONDS.clone())).unwrap();
+    REGISTRY.register(Box::new(TRACKS_PLAYED.clone())).unwrap();
+    REGISTRY.register(Box::new(TRACKS_SKIPPED.clone())).unwrap();
+    REGISTRY.register(Box::new(QUEUE_LENGTH.clone())).unwrap();
 }
 
 /// Get metrics as text in Prometheus format
