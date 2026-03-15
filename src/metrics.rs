@@ -1,10 +1,9 @@
 // Metrics and health check module
 
 use prometheus::{
-    IntCounter, IntGauge, Histogram, HistogramOpts, Opts, Registry,
+    IntCounter, IntGauge, Histogram, HistogramOpts, Registry,
     Encoder, TextEncoder,
 };
-use std::sync::Arc;
 use lazy_static::lazy_static;
 
 lazy_static! {

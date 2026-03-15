@@ -121,7 +121,6 @@ pub fn parse_host_port(host_str: &str) -> Result<(String, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::DirBuilderExt;
     use tempfile::tempdir;
     use std::process::Command;
 

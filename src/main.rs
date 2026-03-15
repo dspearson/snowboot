@@ -6,8 +6,6 @@ mod icecast;
 mod metrics;
 mod player;
 mod queue;
-mod server;
-mod util;
 mod validation;
 
 use std::net::SocketAddr;
@@ -18,7 +16,7 @@ use crate::errors::Result;
 use clap::Parser;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use oggmux::{OggMux, VorbisConfig, VorbisBitrateMode, BufferConfig};
 
 use crate::api::AppState;
@@ -100,6 +98,7 @@ async fn main() -> Result<()> {
         content_type: "application/ogg".to_string(),
     };
 
+    let icecast_client_config = icecast_config.clone();
     let icecast_client = IcecastClient::new(icecast_config);
     icecast_client.connect().await?;
 
@@ -129,21 +128,50 @@ async fn main() -> Result<()> {
 
     let (input_tx, mut output_rx, _shutdown_tx, _mux_handle) = mux.spawn();
 
-    // Spawn the Icecast sender task
+    // Spawn the Icecast sender task with reconnection
     let icecast_sender = {
-        let icecast_client = icecast_client.clone();
+        let config = icecast_client_config.clone();
         let shutdown = shutdown.clone();
+        let connection_state = connection_state.clone();
+        let mut client = icecast_client.clone();
 
         tokio::spawn(async move {
+            let mut backoff = Duration::from_secs(1);
+            let max_backoff = Duration::from_secs(60);
+
             loop {
                 tokio::select! {
                     _ = shutdown.cancelled() => break,
                     chunk = output_rx.recv() => {
                         match chunk {
                             Some(data) => {
-                                if let Err(e) = icecast_client.send_data(&data).await {
-                                    error!("Failed to send data to Icecast: {}", e);
-                                    break;
+                                if let Err(e) = client.send_data(&data).await {
+                                    warn!("Lost Icecast connection: {}", e);
+                                    *connection_state.lock().unwrap() = ConnectionState::Reconnecting;
+
+                                    loop {
+                                        if shutdown.is_cancelled() { break; }
+
+                                        info!("Reconnecting in {:?}...", backoff);
+                                        tokio::time::sleep(backoff).await;
+                                        backoff = (backoff * 2).min(max_backoff);
+                                        metrics::RECONNECT_COUNT.inc();
+
+                                        let new_client = IcecastClient::new(config.clone());
+                                        match new_client.connect().await {
+                                            Ok(()) => {
+                                                info!("Reconnected to Icecast");
+                                                client = new_client;
+                                                *connection_state.lock().unwrap() = ConnectionState::Connected;
+                                                backoff = Duration::from_secs(1);
+                                                break;
+                                            }
+                                            Err(e) => {
+                                                warn!("Reconnection failed: {}", e);
+                                                metrics::CONNECTION_FAILURES.inc();
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             None => break,

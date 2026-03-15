@@ -9,7 +9,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 
 use crate::errors::{Result, SnowbootError, ErrorCode};
-use tracing::{error, info, trace, debug, instrument};
+use tracing::{error, info, trace, debug};
 use httparse;
 
 /// Configuration for the Icecast connection

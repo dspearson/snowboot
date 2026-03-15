@@ -6,6 +6,4 @@ pub mod icecast;
 pub mod metrics;
 pub mod player;
 pub mod queue;
-pub mod server;
-pub mod util;
 pub mod validation;

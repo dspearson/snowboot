@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{info, warn, error, debug, instrument};
+use tracing::{info, warn, error, debug};
 
 use crate::errors::{Result, SnowbootError, ErrorCode};
 use crate::icecast::{IcecastClient, IcecastConfig};
