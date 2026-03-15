@@ -93,6 +93,6 @@ OPTIONS:
 
 Snowboot depends on the `oggmux` library for Ogg stream processing and silence generation.
 
-## License
+## Licence
 
-ISC License - See LICENSE file for details.
+ISC Licence — See LICENCE file for details.
