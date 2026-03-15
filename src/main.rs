@@ -107,7 +107,12 @@ async fn main() -> Result<()> {
         *connection_state.lock().unwrap() = ConnectionState::Connected;
     }
 
-    // Configure and spawn OggMux
+    // Create queue and player (before mux so we can wire up metadata callback)
+    let queue: SharedQueue = Arc::new(tokio::sync::RwLock::new(Queue::default()));
+    let player_handle = PlayerHandle::new(queue.clone());
+
+    // Configure and spawn OggMux with metadata callback
+    let metadata_player = player_handle.clone();
     let mux = OggMux::new()
         .with_vorbis_config(VorbisConfig {
             sample_rate: args.sample_rate,
@@ -115,10 +120,14 @@ async fn main() -> Result<()> {
         })
         .with_buffer_config(BufferConfig {
             buffered_seconds: args.buffer,
-            max_chunk_size: 8192,
+            channel_capacity: 8192,
+        })
+        .with_metadata_callback(move |_granule_pos| {
+            metadata_player.now_playing()
+                .map(|track| track.metadata_comments())
         });
 
-    let (input_tx, mut output_rx) = mux.spawn();
+    let (input_tx, mut output_rx, _shutdown_tx, _mux_handle) = mux.spawn();
 
     // Spawn the Icecast sender task
     let icecast_sender = {
@@ -145,10 +154,6 @@ async fn main() -> Result<()> {
             debug!("Icecast sender task finished");
         })
     };
-
-    // Create queue and player
-    let queue: SharedQueue = Arc::new(tokio::sync::RwLock::new(Queue::default()));
-    let player_handle = PlayerHandle::new(queue.clone());
 
     // Spawn player task
     let player_task = {

@@ -14,7 +14,7 @@ use crate::queue::{SharedQueue, Track};
 pub struct PlayerHandle {
     skip_token: Arc<RwLock<CancellationToken>>,
     pub queue: SharedQueue,
-    now_playing: Arc<RwLock<Option<Track>>>,
+    now_playing: Arc<std::sync::RwLock<Option<Track>>>,
 }
 
 impl PlayerHandle {
@@ -22,7 +22,7 @@ impl PlayerHandle {
         Self {
             skip_token: Arc::new(RwLock::new(CancellationToken::new())),
             queue,
-            now_playing: Arc::new(RwLock::new(None)),
+            now_playing: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -32,8 +32,8 @@ impl PlayerHandle {
         info!("Skip requested");
     }
 
-    pub async fn now_playing(&self) -> Option<Track> {
-        self.now_playing.read().await.clone()
+    pub fn now_playing(&self) -> Option<Track> {
+        self.now_playing.read().unwrap().clone()
     }
 }
 
@@ -73,7 +73,7 @@ pub async fn run_player(
         info!("Now playing: {} ({})", track.title, track.path.display());
 
         // Set now_playing
-        *handle.now_playing.write().await = Some(track.clone());
+        *handle.now_playing.write().unwrap() = Some(track.clone());
 
         // Create a fresh cancellation token for this track
         let track_token = CancellationToken::new();
@@ -90,7 +90,7 @@ pub async fn run_player(
         metrics::TRACKS_PLAYED.inc();
 
         // Clear now_playing
-        *handle.now_playing.write().await = None;
+        *handle.now_playing.write().unwrap() = None;
     }
 
     debug!("Player task finished");

@@ -45,8 +45,6 @@ pub fn router(state: AppState) -> Router {
 #[derive(Deserialize)]
 struct AddTrackRequest {
     path: String,
-    #[serde(default)]
-    title: String,
 }
 
 #[derive(Deserialize)]
@@ -111,16 +109,7 @@ async fn add_track(
     Json(req): Json<AddTrackRequest>,
 ) -> Result<(StatusCode, Json<Track>), (StatusCode, Json<ErrorResponse>)> {
     let path_buf = validate_ogg_file(&req.path)?;
-    let title = if req.title.is_empty() {
-        path_buf.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Unknown")
-            .to_string()
-    } else {
-        req.title
-    };
-
-    let track = Track::new(path_buf, title);
+    let track = Track::from_file(path_buf);
     let response = track.clone();
 
     {
@@ -137,16 +126,7 @@ async fn add_track_next(
     Json(req): Json<AddTrackRequest>,
 ) -> Result<(StatusCode, Json<Track>), (StatusCode, Json<ErrorResponse>)> {
     let path_buf = validate_ogg_file(&req.path)?;
-    let title = if req.title.is_empty() {
-        path_buf.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Unknown")
-            .to_string()
-    } else {
-        req.title
-    };
-
-    let track = Track::new(path_buf, title);
+    let track = Track::from_file(path_buf);
     let response = track.clone();
 
     {
@@ -198,7 +178,7 @@ async fn skip_track(State(state): State<AppState>) -> StatusCode {
 }
 
 async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
-    let now_playing = state.player.now_playing().await;
+    let now_playing = state.player.now_playing();
     let queue_length = state.queue.read().await.len();
     let uptime = state.start_time.elapsed().as_secs();
 
