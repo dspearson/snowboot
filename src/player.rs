@@ -1,8 +1,10 @@
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
+use serde::Serialize;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::{sleep, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -10,19 +12,47 @@ use tracing::{debug, error, info, warn};
 use crate::metrics;
 use crate::queue::{SharedQueue, Track};
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "event", content = "data")]
+pub enum PlayerEvent {
+    #[serde(rename = "track_started")]
+    TrackStarted(Track),
+    #[serde(rename = "track_finished")]
+    TrackFinished { track: Track, duration_secs: u64 },
+    #[serde(rename = "track_skipped")]
+    TrackSkipped { track: Track, duration_secs: u64 },
+    #[serde(rename = "queue_changed")]
+    QueueChanged { length: usize },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryEntry {
+    pub track: Track,
+    pub started_at: u64,
+    pub duration_secs: u64,
+    pub skipped: bool,
+}
+
+pub type SharedHistory = Arc<std::sync::RwLock<Vec<HistoryEntry>>>;
+
 #[derive(Clone)]
 pub struct PlayerHandle {
     skip_token: Arc<RwLock<CancellationToken>>,
     pub queue: SharedQueue,
     now_playing: Arc<std::sync::RwLock<Option<Track>>>,
+    pub event_tx: broadcast::Sender<PlayerEvent>,
+    pub history: SharedHistory,
 }
 
 impl PlayerHandle {
     pub fn new(queue: SharedQueue) -> Self {
+        let (event_tx, _) = broadcast::channel(64);
         Self {
             skip_token: Arc::new(RwLock::new(CancellationToken::new())),
             queue,
             now_playing: Arc::new(std::sync::RwLock::new(None)),
+            event_tx,
+            history: Arc::new(std::sync::RwLock::new(Vec::new())),
         }
     }
 
@@ -35,6 +65,14 @@ impl PlayerHandle {
     pub fn now_playing(&self) -> Option<Track> {
         self.now_playing.read().unwrap().clone()
     }
+
+    pub fn send_event(&self, event: PlayerEvent) {
+        let _ = self.event_tx.send(event);
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
 pub async fn run_player(
@@ -57,14 +95,12 @@ pub async fn run_player(
         let track = match track {
             Some(t) => t,
             None => {
-                // Update queue length metric
                 metrics::QUEUE_LENGTH.set(0);
                 sleep(Duration::from_millis(200)).await;
                 continue;
             }
         };
 
-        // Update queue length metric after pop
         {
             let q = handle.queue.read().await;
             metrics::QUEUE_LENGTH.set(q.len() as i64);
@@ -72,24 +108,48 @@ pub async fn run_player(
 
         info!("Now playing: {} ({})", track.title, track.path.display());
 
-        // Set now_playing
         *handle.now_playing.write().unwrap() = Some(track.clone());
+        let started_at = unix_now();
+        handle.send_event(PlayerEvent::TrackStarted(track.clone()));
 
-        // Create a fresh cancellation token for this track
         let track_token = CancellationToken::new();
         *handle.skip_token.write().await = track_token.clone();
 
-        // Stream the file
         let was_skipped = stream_file(&track.path, &input_tx, &track_token, &shutdown).await;
+        let duration_secs = unix_now() - started_at;
 
         if was_skipped {
             metrics::TRACKS_SKIPPED.inc();
+            handle.send_event(PlayerEvent::TrackSkipped {
+                track: track.clone(),
+                duration_secs,
+            });
             info!("Skipped: {}", track.title);
+        } else {
+            handle.send_event(PlayerEvent::TrackFinished {
+                track: track.clone(),
+                duration_secs,
+            });
         }
 
         metrics::TRACKS_PLAYED.inc();
 
-        // Clear now_playing
+        // Record history
+        {
+            let mut history = handle.history.write().unwrap();
+            history.push(HistoryEntry {
+                track: track.clone(),
+                started_at,
+                duration_secs,
+                skipped: was_skipped,
+            });
+            // Keep last 1000 entries
+            let len = history.len();
+            if len > 1000 {
+                history.drain(..len - 1000);
+            }
+        }
+
         *handle.now_playing.write().unwrap() = None;
     }
 
@@ -122,7 +182,7 @@ async fn stream_file(
             }
             result = file.read(&mut buf) => {
                 match result {
-                    Ok(0) => return false, // EOF
+                    Ok(0) => return false,
                     Ok(n) => {
                         let data = Bytes::copy_from_slice(&buf[..n]);
                         if input_tx.send(data).await.is_err() {

@@ -9,6 +9,7 @@ mod queue;
 mod validation;
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -63,6 +64,14 @@ struct Args {
     /// API server bind address
     #[arg(long, value_name = "ADDR", default_value = "0.0.0.0")]
     api_bind: String,
+
+    /// Restrict file paths to this directory
+    #[arg(long, value_name = "DIR")]
+    media_dir: Option<String>,
+
+    /// Bearer token for API authentication
+    #[arg(long, value_name = "TOKEN")]
+    api_token: Option<String>,
 
     /// Log level
     #[arg(long, value_name = "LEVEL", default_value = "info")]
@@ -194,11 +203,23 @@ async fn main() -> Result<()> {
 
     // Build and start the API server
     let start_time = Instant::now();
+    let media_dir = args.media_dir.map(PathBuf::from);
+    let api_token = args.api_token;
+
+    if let Some(ref dir) = media_dir {
+        info!("Media directory: {}", dir.display());
+    }
+    if api_token.is_some() {
+        info!("API authentication enabled");
+    }
+
     let app_state = AppState {
         queue: queue.clone(),
         player: player_handle.clone(),
         start_time,
         connection_state: connection_state.clone(),
+        media_dir,
+        api_token,
     };
 
     let app = api::router(app_state);

@@ -156,6 +156,12 @@ impl Queue {
     pub fn is_empty(&self) -> bool {
         self.tracks.is_empty()
     }
+
+    pub fn shuffle(&mut self) {
+        use rand::seq::SliceRandom;
+        let mut rng = rand::rng();
+        self.tracks.make_contiguous().shuffle(&mut rng);
+    }
 }
 
 pub type SharedQueue = Arc<RwLock<Queue>>;

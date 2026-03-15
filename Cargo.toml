@@ -32,11 +32,14 @@ rustls = "0.23"
 tokio-rustls = "0.26"
 thiserror = "2.0"
 lazy_static = "1.5"
+rand = "0.9"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 [dev-dependencies]
 criterion = "0.5"
 tokio-test = "0.4"
 tempfile = "3.27"
+tower = "0.5"
 
 [[bench]]
 name = "streaming_benchmark"
