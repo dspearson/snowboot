@@ -7,7 +7,7 @@ license = "ISC"
 description = "equipment to help brave icy streams"
 keywords = ["remuxing", "ogg"]
 repository = "https://github.com/dspearson/snowboot"
-readme = "README.rd"
+readme = "README.md"
 
 [dependencies]
 base64 = "0.22.1"
